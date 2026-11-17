@@ -160,7 +160,7 @@ textarea{resize:vertical;min-height:210px;line-height:1.5}
 .lw-bowl .nm{font:600 32px/1.05 var(--fd);overflow:hidden;text-overflow:ellipsis;min-width:0}
 .lw-bowl .fg{font:600 23px/1 var(--fd);color:var(--ov-muted);letter-spacing:.04em}
 .lw-bowl small{font:600 16px var(--fd);letter-spacing:.16em;color:var(--ov-muted);display:block}
-.lw-bowl .ov-line{display:flex;align-items:center;gap:14px;min-width:0;overflow:hidden;flex-wrap:nowrap}
+.lw-bowl .ov-line{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0;overflow:hidden}
 .lw-bowl .ov-line small{flex:none}
 .lw-bowl .chips{font-size:21px;gap:6px;flex-wrap:nowrap;min-height:0}
 .lw-mid{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:0 16px;text-align:center;border-left:1px solid var(--ov-line);border-right:1px solid var(--ov-line)}
@@ -209,10 +209,10 @@ textarea{resize:vertical;min-height:210px;line-height:1.5}
 .stk.st{padding:96px 72px;gap:56px}.stk.st .stt .s{font-size:120px}.stk.st .stk-s{font-size:54px}.stk.st .stk-p{font-size:44px;gap:20px}
 @media (prefers-reduced-motion:no-preference){
 .btn{transition:border-color .12s}
-@keyframes in-left{from{opacity:0;transform:translateX(-45px)}to{opacity:1;transform:none}}
-@keyframes in-up{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:none}}
+@keyframes in-left{from{opacity:0;transform:translateX(-90px)}to{opacity:1;transform:none}}
+@keyframes in-up{from{opacity:0;transform:translateY(80px)}to{opacity:1;transform:none}}
 @keyframes in-soft{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
-@keyframes in-rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes in-rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
 @keyframes logo-in{0%{opacity:0;scale:.35}60%{opacity:1;scale:1.08}100%{opacity:1;scale:1}}
 @keyframes pop{0%{scale:1}30%{scale:1.22;filter:brightness(1.5)}100%{scale:1}}
 @keyframes drift{from{transform:translate3d(-4%,-3%,0) rotate(0deg)}to{transform:translate3d(4%,3%,0) rotate(7deg)}}
@@ -386,8 +386,7 @@ function initFirebase(u){
       const writer=/^(scorer|admin|overlays)$/.test(route());
       const rv=await ref.rev();
       if(rv==null){if(first&&writer&&S.rev>1)schedulePush()}
-      else if(rv>S.rev){const d=await ref.get();let r=null;try{r=JSON.parse(d.state)}catch(e){}if(r&&r.rev>S.rev){S=r;saveLocal();render()}}
-      else if(first&&rv<S.rev&&writer)schedulePush();
+      else if(rv!==S.rev&&!(dirty||pt)){const d=await ref.get();let r=null;try{r=JSON.parse(d.state)}catch(e){}if(r&&r.rev!==S.rev){S=r;saveLocal();render()}}
       first=false;setSync('live');
     }catch(e){setSync('local')}
     busy=false;
