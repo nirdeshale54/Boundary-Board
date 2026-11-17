@@ -416,15 +416,44 @@ const app=document.getElementById('app');
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function ink(hex){const h=String(hex||'#888888').replace('#','');const n=parseInt(h.length===3?h.split('').map(x=>x+x).join(''):h,16)||0;return(0.299*(n>>16)+0.587*(n>>8&255)+0.114*(n&255))>150?'#0b0f0d':'#ffffff'}
 function setPath(o,p,v){const k=p.split('.');let c=o;for(let i=0;i<k.length-1;i++)c=c[k[i]];c[k[k.length-1]]=v}
+
+/* ---------- input safety: every state from storage, other tabs or the shared database passes through here ---------- */
+const IMG_OK=/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+\/]+=*$/;
+const safeImg=u=>(typeof u==='string'&&u.length<700000&&IMG_OK.test(u))?u:'';
+function cleanState(r){
+  try{
+    if(!r||typeof r!=='object'||typeof r.rev!=='number'||!isFinite(r.rev))return null;
+    if(!Array.isArray(r.inn)||r.inn.length<1||r.inn.length>2||!Array.isArray(r.teams)||r.teams.length!==2)return null;
+    if(!r.match||typeof r.match!=='object'||!r.event||typeof r.event!=='object'||!r.ov||typeof r.ov!=='object'||typeof r.cur!=='number')return null;
+    if(!r.teams.every(t=>t&&typeof t==='object'&&Array.isArray(t.players)))return null;
+    if(!r.inn.every(i=>i&&typeof i==='object'&&Array.isArray(i.batters)&&Array.isArray(i.bowlers)&&Array.isArray(i.over)&&Array.isArray(i.fow)))return null;
+    let n=0;
+    const IMGK={logo:1,sponsor:1,bgImg:1},COLK={color:1,c1:1,c2:1};
+    const walk=(v,k,d)=>{
+      if(++n>60000||d>8)throw new Error('big');
+      if(v===null||typeof v==='boolean')return v;
+      if(typeof v==='number')return isFinite(v)?v:0;
+      if(typeof v==='string'){
+        if(IMGK[k])return safeImg(v);
+        if(COLK[k])return /^#[0-9a-fA-F]{3,8}$/.test(v)?v:'#888888';
+        return v.slice(0,400).replace(/[<>"`\\]/g,'');
+      }
+      if(Array.isArray(v)){if(v.length>3000)throw new Error('big');return v.map(x=>walk(x,k,d+1))}
+      if(typeof v==='object'){const o={};for(const key of Object.keys(v)){if(key==='__proto__'||key==='constructor'||key==='prototype')continue;o[key]=walk(v[key],key,d+1)}return o}
+      return null;
+    };
+    return walk(r,'',0);
+  }catch(e){return null}
+}
 const KEY='boundary-board-v1';
-function load(){try{const t=localStorage.getItem(KEY);return t?JSON.parse(t):null}catch(e){return null}}
+function load(){try{const t=localStorage.getItem(KEY);return t?cleanState(JSON.parse(t)):null}catch(e){return null}}
 function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
 let S=load()||seed();
 const undo=[];
 const ui={mode:'',wk:null,arm:'',err:''};
 let sync='local',pending=false;
 const bc=(function(){try{return typeof BroadcastChannel!=='undefined'?new BroadcastChannel('boundary-board'):null}catch(e){return null}})();
-if(bc)bc.onmessage=e=>{const r=e.data;if(r&&r.rev>S.rev){S=r;saveLocal();render()}};
+if(bc)bc.onmessage=e=>{const r=cleanState(e.data);if(r&&r.rev>S.rev){S=r;saveLocal();render()}};
 
 /* ---------- shared sync ---------- */
 let docRef=null,pushing=false,dirty=false,pt=0;
@@ -439,9 +468,11 @@ async function doPush(){
   catch(e){setSync('ro')}
   finally{pushing=false;if(dirty){dirty=false;schedulePush()}}
 }
+const FB_OK=/^(https:\/\/[a-z0-9-]+(-default-rtdb)?(\.[a-z0-9-]+)?\.(firebaseio\.com|firebasedatabase\.app)|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/i;
+function fbClean(u){u=String(u||'').trim().replace(/\/+$/,'');return FB_OK.test(u)?u:''}
 function fbUrl(){
-  try{const q=new URLSearchParams(location.search).get('fb');if(q){localStorage.setItem('bb-fb',q)}}catch(e){}
-  try{let u=localStorage.getItem('bb-fb')||'';u=u.trim().replace(/\/+$/,'');return /^https?:\/\/[^\s]+$/.test(u)?u:''}catch(e){return ''}
+  try{const q=fbClean(new URLSearchParams(location.search).get('fb'));if(q){localStorage.setItem('bb-fb',q)}}catch(e){}
+  try{return fbClean(localStorage.getItem('bb-fb'))}catch(e){return ''}
 }
 function fbRef(u){
   const url=u+'/boundary-board/match';
@@ -460,7 +491,7 @@ function initFirebase(u){
       const writer=/^(scorer|admin|overlays)$/.test(route());
       const rv=await ref.rev();
       if(rv==null){if(first&&writer&&S.rev>1)schedulePush()}
-      else if(rv!==S.rev&&!(dirty||pt)){const d=await ref.get();let r=null;try{r=JSON.parse(d.state)}catch(e){}if(r&&r.rev!==S.rev){S=r;saveLocal();render()}}
+      else if(rv!==S.rev&&!(dirty||pt)){const d=await ref.get();let r=null;try{r=cleanState(JSON.parse(d.state))}catch(e){}if(r&&r.rev!==S.rev){S=r;saveLocal();render()}}
       first=false;setSync('live');
     }catch(e){setSync('local')}
     busy=false;
@@ -481,7 +512,7 @@ async function initSync(){
       clearTimeout(timer);
       const writer=/^(scorer|admin|overlays)$/.test(route());
       if(snap.exists){
-        let r=null;try{r=JSON.parse(snap.data().state)}catch(e){}
+        let r=null;try{r=cleanState(JSON.parse(snap.data().state))}catch(e){}
         if(r&&r.rev>S.rev){S=r;saveLocal();render()}
         else if(first&&r&&r.rev<S.rev&&writer)schedulePush();
       }else if(first&&writer&&S.rev>1)schedulePush();
@@ -499,7 +530,7 @@ function commit(fn,undoable){
 }
 function doUndo(){
   const s=undo.pop();if(!s)return;
-  const rev=S.rev;S=JSON.parse(s);S.rev=rev+1;saveLocal();
+  const rev=S.rev;S=cleanState(JSON.parse(s))||S;S.rev=rev+1;saveLocal();
   try{if(bc)bc.postMessage(S)}catch(e){}
   schedulePush();render(true);
 }
@@ -527,14 +558,14 @@ function dismissal(b){
   switch(x.how){case 'bowled':return 'b '+x.bowler;case 'caught':return 'c '+f+' b '+x.bowler;case 'lbw':return 'lbw b '+x.bowler;
     case 'stumped':return 'st '+f+' b '+x.bowler;case 'run out':return 'run out'+(x.fielder?' ('+x.fielder+')':'');default:return 'hit wkt b '+x.bowler}
 }
-const chipsHtml=inn=>inn?inn.over.map(c=>'<i class="c c-'+c.k+'">'+esc(c.t)+'</i>').join(''):'';
-function lg(t,sz){return t.logo?'<span class="lg" style="--s:'+sz+'px"><img alt="" src="'+t.logo+'"></span>':'<span class="lg mono" style="--s:'+sz+'px;background:'+esc(t.color)+';color:'+ink(t.color)+'">'+esc(t.short.slice(0,3))+'</span>'}
+const chipsHtml=inn=>inn?inn.over.map(c=>'<i class="c c-'+String(c.k).replace(/[^a-z]/g,'')+'">'+esc(c.t)+'</i>').join(''):'';
+function lg(t,sz){return safeImg(t.logo)?'<span class="lg" style="--s:'+sz+'px"><img alt="" src="'+safeImg(t.logo)+'"></span>':'<span class="lg mono" style="--s:'+sz+'px;background:'+esc(t.color)+';color:'+ink(t.color)+'">'+esc(t.short.slice(0,3))+'</span>'}
 function evLogo(S,sz){
-  const e=S.event;if(e.logo)return '<span class="lg" style="--s:'+sz+'px"><img alt="" src="'+e.logo+'"></span>';
+  const e=S.event;if(safeImg(e.logo))return '<span class="lg" style="--s:'+sz+'px"><img alt="" src="'+safeImg(e.logo)+'"></span>';
   const ini=e.name.split(/\s+/).map(w=>w[0]||'').join('').slice(0,3).toUpperCase();
   return '<span class="lg ph" style="--s:'+sz+'px">'+esc(ini||'LOGO')+'</span>';
 }
-const spImg=S=>(S.ov.showSponsor&&S.event.sponsor)?'<img alt="" src="'+S.event.sponsor+'">':'';
+const spImg=S=>(S.ov.showSponsor&&safeImg(S.event.sponsor))?'<img alt="" src="'+safeImg(S.event.sponsor)+'">':'';
 const figs=b=>ov(b.balls)+'-'+b.m+'-'+b.r+'-'+b.w;
 
 /* ---------- live view ---------- */
@@ -681,7 +712,7 @@ function adminView(){
    scheduleCard()+
    '<div class="grid g2">'+teamCard(0)+teamCard(1)+'</div>'+
    '<div class="card stack"><h2>Logo spaces</h2><div class="grid g2"><div class="logoup">'+evLogo(S,72)+'<label>Event or league logo<input type="file" accept="image/*" data-logo="event.logo"></label>'+(S.event.logo?'<button class="btn" data-act="clear-logo" data-p="event.logo">Remove</button>':'')+'</div>'+
-   '<div class="logoup"><span class="lg" style="--s:72px">'+(S.event.sponsor?'<img alt="" src="'+S.event.sponsor+'">':'<span class="lg ph" style="--s:72px">AD</span>')+'</span><label>Sponsor logo<input type="file" accept="image/*" data-logo="event.sponsor"></label>'+(S.event.sponsor?'<button class="btn" data-act="clear-logo" data-p="event.sponsor">Remove</button>':'')+'</div></div>'+
+   '<div class="logoup"><span class="lg" style="--s:72px">'+(safeImg(S.event.sponsor)?'<img alt="" src="'+safeImg(S.event.sponsor)+'">':'<span class="lg ph" style="--s:72px">AD</span>')+'</span><label>Sponsor logo<input type="file" accept="image/*" data-logo="event.sponsor"></label>'+(S.event.sponsor?'<button class="btn" data-act="clear-logo" data-p="event.sponsor">Remove</button>':'')+'</div></div>'+
    '<p class="small muted" style="margin:0">Logos are shrunk to fit and saved with the match. Transparent PNG or SVG files work best.</p></div></div>';
 }
 
@@ -790,7 +821,7 @@ function ovCentre(o){
   }
   const hist=(inn.hist||[]).slice(-2).reverse().map((h,i,a)=>{
     const idx=(inn.hist||[]).length-i,prev=(inn.hist||[])[idx-2],r=h.tot-(prev?prev.tot:0);
-    return '<div class="mc-ro"><span>Ov '+h.n+'</span><div class="chips">'+h.c.map(c=>'<i class="c c-'+c.k+'">'+esc(c.t)+'</i>').join('')+'</div><b>'+r+'</b></div>'}).join('')||'<div class="mc-none">No completed overs yet</div>';
+    return '<div class="mc-ro"><span>Ov '+(+h.n||0)+'</span><div class="chips">'+h.c.map(c=>'<i class="c c-'+String(c.k).replace(/[^a-z]/g,'')+'">'+esc(c.t)+'</i>').join('')+'</div><b>'+r+'</b></div>'}).join('')||'<div class="mc-none">No completed overs yet</div>';
   const lw=inn.fow.length?inn.fow[inn.fow.length-1]:null,lb=lw?inn.batters.find(b=>b.name===lw.name):null;
   const lwHtml=lw?'<div class="mc-lw"><b>'+esc(lw.name)+(lb?' '+lb.r+' <em>('+lb.b+')</em>':'')+'</b><span>'+lw.r+'/'+lw.n+' · '+lw.ov+' ov</span></div>':'<div class="mc-none">No wicket yet</div>';
   const ini=n=>n.split(/\s+/).map(w=>w[0]||'').join('').slice(0,2).toUpperCase();
@@ -828,14 +859,14 @@ const OVL={bug:['Score bug','Compact strip for the top-left corner. Leave it on 
   centre:['Match centre','Full screen live scoreboard: score, this over, recent overs, last wicket and players.',1920,1080,ovCentre],
   square:['Square card','1080 × 1080 for social posts and clips.',1080,1080,function(o){return ovStack(o,'sq')}],
   story:['Vertical card','1080 × 1920 for reels and stories.',1080,1920,function(o){return ovStack(o,'st')}]};
-const stage=k=>{const d=OVL[k],o=V(S),c=ovCols(o.bt.color,o.bl.color),m=(S.ov.style==='solid'||S.ov.style==='custom')?';--b1:color-mix(in srgb,'+esc(c[0])+' 38%,#0b0f0d);--b2:color-mix(in srgb,'+esc(c[1])+' 38%,#0b0f0d)':'';const im=(S.ov.bgImg&&/^data:image\//.test(S.ov.bgImg)&&k!=='bug'&&k!=='lower')?(()=>{const dm=Math.min(90,Math.max(0,S.ov.bgDim==null?45:+S.ov.bgDim))/100;return ';--abs:linear-gradient(rgba(6,10,8,'+dm+'),rgba(6,10,8,'+dm+')),url('+S.ov.bgImg+') center/cover no-repeat'})():'';return '<div class="stage" style="width:'+d[2]+'px;height:'+d[3]+'px;--ca:'+esc(c[0])+';--cb:'+esc(c[1])+m+im+'">'+d[4](o)+'</div>'};
+const stage=k=>{const d=OVL[k],o=V(S),c=ovCols(o.bt.color,o.bl.color),m=(S.ov.style==='solid'||S.ov.style==='custom')?';--b1:color-mix(in srgb,'+esc(c[0])+' 38%,#0b0f0d);--b2:color-mix(in srgb,'+esc(c[1])+' 38%,#0b0f0d)':'';const im=(safeImg(S.ov.bgImg)&&k!=='bug'&&k!=='lower')?(()=>{const dm=Math.min(90,Math.max(0,S.ov.bgDim==null?45:+S.ov.bgDim))/100;return ';--abs:linear-gradient(rgba(6,10,8,'+dm+'),rgba(6,10,8,'+dm+')),url('+safeImg(S.ov.bgImg)+') center/cover no-repeat'})():'';return '<div class="stage" style="width:'+d[2]+'px;height:'+d[3]+'px;--ca:'+esc(c[0])+';--cb:'+esc(c[1])+m+im+'">'+d[4](o)+'</div>'};
 function overlaysView(){
   const base=location.href.split('#')[0].split('?')[0]+(fbUrl()?'?fb='+encodeURIComponent(fbUrl()):'');
   let h='<div class="stack"><div class="card stack"><h2>Stream overlays</h2><p class="muted" style="margin:0;max-width:70ch">Each overlay has its own link: add the name after # on this page\'s address. Open it full size in your streaming software\'s browser source, set to the size shown, then remove the background with a colour key. Press Esc on an overlay to come back here.</p>'+
    '<div class="fields"><label>Background behind overlays<select data-path="ov.key"><option value="clear"'+(S.ov.key==='clear'?' selected':'')+'>Transparent (OBS browser source)</option><option value="green"'+(S.ov.key==='green'?' selected':'')+'>Green (key it out)</option><option value="blue"'+(S.ov.key==='blue'?' selected':'')+'>Blue (key it out)</option><option value="magenta"'+(S.ov.key==='magenta'?' selected':'')+'>Magenta (key it out)</option><option value="dark"'+(S.ov.key==='dark'?' selected':'')+'>Dark (no keying)</option></select></label>'+
    '<label>Overlay colours<select data-path="ov.style">'+[['team','Team colours'],['solid','Batting team colour only'],['dark','Dark'],['custom','Custom colours']].map(x=>'<option value="'+x[0]+'"'+((S.ov.style||'team')===x[0]?' selected':'')+'>'+x[1]+'</option>').join('')+'</select></label>'+
    (S.ov.style==='custom'?'<label>Colour one (left)<input type="color" data-path="ov.c1" value="'+esc(S.ov.c1||'#1d4ed8')+'"></label><label>Colour two (right)<input type="color" data-path="ov.c2" value="'+esc(S.ov.c2||'#e11d48')+'"></label>':'')+
-   '<label class="chk" style="align-self:end"><input type="checkbox" data-path="ov.showSponsor"'+(S.ov.showSponsor?' checked':'')+'> Show sponsor logo on overlays</label><label class="chk" style="align-self:end"><input type="checkbox" data-path="ov.fx"'+(S.ov.fx!==false?' checked':'')+'> Special effects (four, six, wicket, 50, 100, hat-trick)</label></div><div class="logoup"><span class="lg" style="--s:72px;border-radius:12px;overflow:hidden">'+(S.ov.bgImg?'<img alt="" src="'+S.ov.bgImg+'" style="object-fit:cover;width:100%;height:100%">':'<span class="lg ph" style="--s:72px">BG</span>')+'</span><label>Background image (full screen, square and vertical overlays)<input type="file" accept="image/*" data-bg="1"></label>'+(S.ov.bgImg?'<label>Darken image<select data-path="ov.bgDim" data-kind="num">'+[0,25,45,60,75].map(v=>'<option value="'+v+'"'+((S.ov.bgDim==null?45:+S.ov.bgDim)===v?' selected':'')+'>'+v+'%</option>').join('')+'</select></label><button class="btn" data-act="clear-logo" data-p="ov.bgImg">Remove</button>':'')+'</div></div><div class="grid g2">';
+   '<label class="chk" style="align-self:end"><input type="checkbox" data-path="ov.showSponsor"'+(S.ov.showSponsor?' checked':'')+'> Show sponsor logo on overlays</label><label class="chk" style="align-self:end"><input type="checkbox" data-path="ov.fx"'+(S.ov.fx!==false?' checked':'')+'> Special effects (four, six, wicket, 50, 100, hat-trick)</label></div><div class="logoup"><span class="lg" style="--s:72px;border-radius:12px;overflow:hidden">'+(safeImg(S.ov.bgImg)?'<img alt="" src="'+safeImg(S.ov.bgImg)+'" style="object-fit:cover;width:100%;height:100%">':'<span class="lg ph" style="--s:72px">BG</span>')+'</span><label>Background image (full screen, square and vertical overlays)<input type="file" accept="image/*" data-bg="1"></label>'+(S.ov.bgImg?'<label>Darken image<select data-path="ov.bgDim" data-kind="num">'+[0,25,45,60,75].map(v=>'<option value="'+v+'"'+((S.ov.bgDim==null?45:+S.ov.bgDim)===v?' selected':'')+'>'+v+'%</option>').join('')+'</select></label><button class="btn" data-act="clear-logo" data-p="ov.bgImg">Remove</button>':'')+'</div></div><div class="grid g2">';
   Object.keys(OVL).forEach(k=>{const d=OVL[k];
     h+='<div class="card tile"><h3 style="color:var(--fg)">'+d[0]+' <span class="muted small" style="font-family:var(--fb);letter-spacing:0;text-transform:none">'+d[2]+' × '+d[3]+'</span></h3><p class="muted small" style="margin:6px 0 0">'+d[1]+'</p>'+
      '<div class="thumb" data-fit="box" data-w="'+d[2]+'" data-h="'+d[3]+'" style="aspect-ratio:'+d[2]+'/'+d[3]+';'+(k==='story'?'max-width:240px':'')+'">'+stage(k)+'</div>'+
@@ -1020,7 +1051,7 @@ app.addEventListener('click',e=>{
         s.inn=[mkInn(0)];s.cur=0;s.status='live';s.target=0;s.result='';applyToss(s,0,'bat');
       });
       location.hash='scorer';break}
-    case 'fb-save':{let v=(document.getElementById('fb-url')||{}).value||'';v=v.trim().replace(/\/+$/,'');if(!/^https?:\/\/[^\s]+$/.test(v)){ui.err='Enter the full https:// database URL';render(true);break}try{localStorage.setItem('bb-fb',v)}catch(x){}location.href=location.pathname+'?fb='+encodeURIComponent(v)+location.hash;break}
+    case 'fb-save':{let v=(document.getElementById('fb-url')||{}).value||'';v=fbClean(v);if(!v){ui.err='Enter your Firebase database URL (https://…firebaseio.com or …firebasedatabase.app)';render(true);break}try{localStorage.setItem('bb-fb',v)}catch(x){}location.href=location.pathname+'?fb='+encodeURIComponent(v)+location.hash;break}
     case 'fb-off':{try{localStorage.removeItem('bb-fb')}catch(x){}location.href=location.pathname+location.hash;break}
     case 'clear-logo':commit(s=>setPath(s,d.p,''));break;
     case 'copy':{
